@@ -3,7 +3,7 @@ package domain
 import java.sql.Timestamp
 import java.util.{ArrayList, Comparator, List, Properties}
 
-import bean.TopInternalHostLog
+import bean.{InternalLog, TopInternalHostLog}
 import com.alibaba.fastjson.JSON
 import org.apache.flink.api.common.functions.AggregateFunction
 import org.apache.flink.api.common.serialization.SimpleStringSchema
@@ -46,18 +46,20 @@ object TopInternal {
 
     KafkaSource.
       map(value => {
-          JSON.parseObject(value, classOf[TopInternalHostLog])
+          JSON.parseObject(value, classOf[InternalLog])
       })
       //引入时间
-      .assignTimestampsAndWatermarks(new BoundedOutOfOrdernessTimestampExtractor[TopInternalHostLog](Time.seconds(5)) {
-      override def extractTimestamp(element: TopInternalHostLog): Long = {
-        element.__time
+      .assignTimestampsAndWatermarks(new BoundedOutOfOrdernessTimestampExtractor[InternalLog](Time.seconds(5)) {
+      override def extractTimestamp(element: InternalLog): Long = {
+        element.get__time()
       }
     })
-      .keyBy("source")
-      .timeWindow(Time.minutes(5),Time.seconds(5))
+      .keyBy(value=>{
+        value.getSource
+      })
+      .timeWindow(Time.minutes(1),Time.seconds(5))
 //      //      .sum("session_num")
-      .aggregate(new CountAgg(),new WindowResultFunction())
+      .aggregate(new CountAgg,new WindowResultFunction)
       .keyBy(1)
       .process(new TopNInter(5))
       .print()
@@ -69,7 +71,7 @@ object TopInternal {
   /**
     * 自定义输出格式
     */
-  class TopNInter extends KeyedProcessFunction[Tuple,(String,Long,Long),String]{
+  class TopNInter extends KeyedProcessFunction[Tuple,(String,Long,Int,Int,Int),String]{
     private var topSize = 0
 
     def this(topSize: Int) {
@@ -77,19 +79,19 @@ object TopInternal {
       this.topSize = topSize
     }
 
-    private var hotState : ListState[(String, Long, Long)] = null
+    private var hotState : ListState[(String,Long,Int,Int,Int)] = null
     @throws[Exception]
     override def open(parameters: Configuration): Unit ={
       // 命名状态变量的名字和状态变量的类型
-      val itemsStateDesc = new ListStateDescriptor[(String, Long, Long)]("itemState-state", classOf[(String, Long, Long)])
+      val itemsStateDesc = new ListStateDescriptor[(String,Long,Int,Int,Int)]("itemState-state", classOf[(String,Long,Int,Int,Int)])
       // 从运行时上下文中获取状态并赋值
       hotState = getRuntimeContext.getListState(itemsStateDesc)
     }
 
 
     @throws[Exception]
-    override def onTimer(timestamp: Long, ctx: KeyedProcessFunction[Tuple, (String, Long, Long), String]#OnTimerContext, out: Collector[String]): Unit = {
-      var allCats: List[(String, Long, Long)] = new ArrayList[(String, Long, Long)]
+    override def onTimer(timestamp: Long, ctx: KeyedProcessFunction[Tuple, (String, Long,Int,Int,Int), String]#OnTimerContext, out: Collector[String]): Unit = {
+      var allCats: List[(String, Long,Int,Int,Int)] = new ArrayList[(String, Long,Int,Int,Int)]
       import scala.collection.JavaConversions._
       for (item <- hotState.get) {
         allCats.add(item)
@@ -97,8 +99,8 @@ object TopInternal {
       // 提前清除状态中的数据，释放空间
       hotState.clear()
       // 按照点击量从大到小排序
-      allCats.sort(new Comparator[(String, Long, Long)]() {
-        override def compare(o1: (String, Long, Long), o2: (String, Long, Long)): Int = (o2._3 - o1._3).toInt
+      allCats.sort(new Comparator[(String, Long,Int,Int,Int)]() {
+        override def compare(o1: (String, Long,Int,Int,Int), o2: (String, Long,Int,Int,Int)): Int = (o2._3 - o1._3).toInt
       })
       // 将排名信息格式化成 String, 便于打印
       var result: StringBuilder = new StringBuilder
@@ -106,9 +108,9 @@ object TopInternal {
       result.append("时间: ").append(new Timestamp(timestamp - 1)).append("\n")
       var i: Int = 0
       while (i < allCats.size && i < topSize) {
-        var currentItem: (String, Long, Long) = allCats.get(i)
+        var currentItem: (String,Long,Int,Int,Int) = allCats.get(i)
         // No1:  商品ID=12224  浏览量=2413
-        result.append("No").append(i).append(":").append(" 客户端IP=").append(currentItem._1).append("  会话次数=").append(currentItem._3).append("\n")
+        result.append("No").append(i).append(":").append(" 客户端IP=").append(currentItem._1).append("  会话次数=").append(currentItem._3).append(" 包数=").append(currentItem._4).append(" 字节数=").append(currentItem._5).append("\n")
         i += 1
       }
       result.append("====================================\n\n")
@@ -118,7 +120,7 @@ object TopInternal {
     }
 
 
-    override def processElement(value: (String, Long, Long), ctx: KeyedProcessFunction[Tuple, (String, Long, Long), String]#Context, out: Collector[String]): Unit = {
+    override def processElement(value: (String, Long,Int,Int,Int), ctx: KeyedProcessFunction[Tuple, (String, Long, Int,Int,Int), String]#Context, out: Collector[String]): Unit = {
       hotState.add(value)
       // 注册 windowEnd+1 的 EventTime Timer, 当触发时，说明收齐了属于windowEnd窗口的所有商品数据
       // 也就是当程序看到windowend + 1的水位线watermark时，触发onTimer回调函数
@@ -128,22 +130,29 @@ object TopInternal {
 
   }
 
-  class CountAgg extends AggregateFunction[TopInternalHostLog, Long, Long] {
-    override def createAccumulator(): Long = 0L
+  /**
+    * 自定义累加器
+    */
+  class CountAgg extends AggregateFunction[InternalLog, (Int,Int,Int), (Int,Int,Int)] {
+    override def createAccumulator(): (Int, Int, Int) = (0,0,0)
 
-    override def add(value: TopInternalHostLog, accumulator: Long): Long = accumulator+1
+    override def add(value: InternalLog, accumulator: (Int, Int, Int)): (Int, Int, Int) = (accumulator._1+1,accumulator._2+value.getC2s_byte_num + value.getS2c_byte_num,accumulator._3+value.getC2s_pkt_num+value.getS2c_pkt_num)
 
-    override def getResult(accumulator: Long): Long = accumulator
+    override def getResult(accumulator: (Int, Int, Int)): (Int, Int, Int) =accumulator
 
-    override def merge(a: Long, b: Long): Long = a + b
+    override def merge(a: (Int, Int, Int), b: (Int, Int, Int)): (Int, Int, Int) = (a._1+b._1,a._2+b._2,a._3+b._3)
   }
 
-  class WindowResultFunction extends WindowFunction[Long, (String, Long, Long), Tuple, TimeWindow] {
-    override def apply(key: Tuple, window: TimeWindow, input: Iterable[Long], out: Collector[(String, Long, Long)]): Unit = {
-      val itemId: String = key.asInstanceOf[Tuple1[String]].f0
-      val count = input.iterator.next
-      out.collect((itemId, window.getEnd, count))
-    }
+  /**
+    * 自定义窗口累加
+    */
+  class WindowResultFunction extends WindowFunction[(Int,Int,Int), (String, Long, Int,Int,Int), String, TimeWindow] {
+
+    override def apply(key: String, window: TimeWindow, input: Iterable[(Int, Int, Int)], out: Collector[(String, Long, Int, Int, Int)]): Unit = {
+        val session_num: (Int, Int, Int) = input.iterator.next
+        out.collect((key,window.getEnd,session_num._1,session_num._2,session_num._3))
+
+}
   }
 
   case class Student(name: String, age: Int)
