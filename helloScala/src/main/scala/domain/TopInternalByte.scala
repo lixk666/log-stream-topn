@@ -1,27 +1,25 @@
 package domain
 
-import java.sql.Timestamp
 import java.util.{ArrayList, Comparator, List, Properties}
 
-import bean.{InternalLog, TopInternalHostLog}
+import bean.InternalLog
 import com.alibaba.fastjson.JSON
 import org.apache.flink.api.common.functions.AggregateFunction
 import org.apache.flink.api.common.serialization.SimpleStringSchema
 import org.apache.flink.api.common.state.{ListState, ListStateDescriptor}
-import org.apache.flink.api.java.tuple.{Tuple, Tuple1}
+import org.apache.flink.api.java.tuple.Tuple
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.streaming.api.TimeCharacteristic
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction
 import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor
-import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
-import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer
-import org.apache.flink.streaming.api.scala._
 import org.apache.flink.streaming.api.scala.function.WindowFunction
+import org.apache.flink.streaming.api.scala.{StreamExecutionEnvironment, _}
 import org.apache.flink.streaming.api.windowing.time.Time
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow
+import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer
 import org.apache.flink.util.Collector
 
-object TopInternal {
+object TopInternalByte {
 
   private val ZOOKEEPER_HOST = "192.168.40.119:2181,192.168.40.122:2181,192.168.40.123:2181"
   private val KAFKA_BROKER = "192.168.40.119:9092,192.168.40.122:9092,192.168.40.123:9092"
