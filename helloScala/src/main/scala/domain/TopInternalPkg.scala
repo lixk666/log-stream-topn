@@ -156,14 +156,7 @@ object TopInternalPkg {
     * 自定义累加器
     */
   class CountAgg extends AggregateFunction[(String,Int,Int, Int,Int,Int,Long),(Int,Int,Int,Int,Int), (Int,Int,Int,Int,Int)] {
-//    override def createAccumulator(): (Int, Int, Int) = (0,0,0)
-//
-//    override def add(value: (String, Int, Int, Int, Int, Int, Long), accumulator: (Int, Int, Int)): (Int, Int, Int) = {
-//      (accumulator._1 + 1, accumulator._2 + value._3 + value._4, accumulator._3 + value._5 + value._6)
-//    }
-//    override def getResult(accumulator: (Int, Int, Int)): (Int, Int, Int) = accumulator
-//
-//    override def merge(a: (Int, Int, Int), b: (Int, Int, Int)): (Int, Int, Int) = {(a._1+b._1,a._2+b._2,a._3+b._3)}
+
     override def createAccumulator(): (Int, Int, Int,Int,Int) = (0,0,0,0,0)
 
     override def add(value: (String, Int, Int, Int, Int, Int, Long), accumulator: (Int,Int, Int,Int,Int)): (Int,Int,Int,Int,Int) = {

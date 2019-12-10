@@ -1,6 +1,7 @@
 package domain
 
 import java.sql.Timestamp
+import java.util
 import java.util.{ArrayList, Comparator, List, Properties}
 
 import bean.{InternalLog, TopInternalHostLog}
@@ -43,7 +44,7 @@ object TopInternal {
 
     env.setParallelism(1)
     var KafkaSource: DataStream[String] = env.addSource(new FlinkKafkaConsumer[String]("test-flink", new SimpleStringSchema(), properties)).setParallelism(1)
-
+    var m=0
     KafkaSource.
       map(value => {
           val internalLog = JSON.parseObject(value, classOf[InternalLog])
@@ -71,6 +72,12 @@ object TopInternal {
       .aggregate(new CountAgg,new WindowResultFunction)
       .keyBy(1)
       .process(new TopNInter(5))
+//      .flatMap((list,record:Collector[InternalLog])=>{
+//        while(m<list.size()) {
+//          val log = list.get(1)
+//          record.collect(log)
+//        m+=1
+//        }})
       .print()
 
     env.execute("JOB")
@@ -82,7 +89,7 @@ object TopInternal {
   /**
     * 自定义输出格式
     */
-  class TopNInter extends KeyedProcessFunction[Tuple,(String,Long,Int,Int,Int,Int,Int),String]{
+  class TopNInter extends KeyedProcessFunction[Tuple,(String,Long,Int,Int,Int,Int,Int),util.ArrayList[InternalLog]]{
     private var topSize = 0
 
     def this(topSize: Int) {
@@ -101,7 +108,7 @@ object TopInternal {
 
 
     @throws[Exception]
-    override def onTimer(timestamp: Long, ctx: KeyedProcessFunction[Tuple, (String, Long,Int,Int,Int,Int,Int), String]#OnTimerContext, out: Collector[String]): Unit = {
+    override def onTimer(timestamp: Long, ctx: KeyedProcessFunction[Tuple, (String, Long,Int,Int,Int,Int,Int), ArrayList[InternalLog]]#OnTimerContext, out: Collector[ArrayList[InternalLog]]): Unit = {
       var allCats: List[(String, Long,Int,Int,Int,Int,Int)] = new ArrayList[(String, Long,Int,Int,Int,Int,Int)]
       //自动转换
       import scala.collection.JavaConversions._
@@ -117,34 +124,53 @@ object TopInternal {
         override def compare(o1: (String, Long,Int,Int,Int,Int,Int), o2: (String, Long,Int,Int,Int,Int,Int)): Int = (o2._3 - o1._3)
       })
       // 将排名信息格式化成 String, 便于打印
-      var result: StringBuilder = new StringBuilder
-      result.append("====================================\n")
+//      var result: StringBuilder = new StringBuilder
+//      result.append("====================================\n")
 //      result.append("时间: ").append(new Timestamp(timestamp - 1)).append("\n")
       var i: Int = 0
+//      var tuple: (String, Int, String, Int, Int, Int, Int, Long) = Tuple8("": String, 9: Int, "": String, 0: Int, 0: Int, 0: Int, 0: Int, 0L: Long)
+      var list: util.ArrayList[InternalLog] = new ArrayList[InternalLog]
+
+
+      //创建一个结果表对象
+      var internalLog:InternalLog = new InternalLog
       while (i < allCats.size && i < topSize) {
         var currentItem: (String,Long,Int,Int,Int,Int,Int) = allCats.get(i)
         // No1:  商品ID=12224  浏览量=2413
-        result
-          .append("No").append(i).append(":")
-          .append(" \t客户端IP=").append(currentItem._1)
-          .append(" \t会话次数=").append(currentItem._3)
-          .append(" \tc2s包数=").append(currentItem._4)
-          .append(" \ts2c包数").append(currentItem._5)
-          .append(" \tc2s字节数=").append(currentItem._6)
-          .append(" \ts2c字节数").append(currentItem._7)
-          .append(" \t时间戳是 :"+currentItem._2)
-          .append(" \torerby：session_num")
-          .append("\n")
+//        result
+//          .append("No").append(i).append(":")
+//          .append(" \t客户端IP=").append(currentItem._1)
+//          .append(" \t会话次数=").append(currentItem._3)
+//          .append(" \tc2s包数=").append(currentItem._4)
+//          .append(" \ts2c包数").append(currentItem._5)
+//          .append(" \tc2s字节数=").append(currentItem._6)
+//          .append(" \ts2c字节数").append(currentItem._7)
+//          .append(" \t时间戳是 :"+currentItem._2)
+//          .append(" \torerby：session_num")
+//          .append("\n")
+        internalLog.setSource(currentItem._1)
+        internalLog.setSession_num(currentItem._3)
+        internalLog.setOrder_by("session_num")
+        internalLog.setC2s_pkt_num(currentItem._4)
+        internalLog.setS2c_pkt_num(currentItem._5)
+        internalLog.setC2s_byte_num(currentItem._6)
+        internalLog.setS2c_byte_num(currentItem._7)
+        internalLog.set__time(currentItem._2)
+        //将对象放入列表
+        list.add(internalLog)
+
+//        tuple= (currentItem._1,currentItem._3,"session_num",currentItem._4,currentItem._5,currentItem._6,currentItem._7,currentItem._2)
         i += 1
       }
-      result.append("====================================\n\n")
+//      result.append("====================================\n\n")
       // 控制输出频率，模拟实时滚动结果
 //      Thread.sleep(1000)
-      out.collect(result.toString)
+      out.collect(list)
+      list.clear()
     }
 
 
-    override def processElement(value: (String, Long,Int,Int,Int,Int,Int), ctx: KeyedProcessFunction[Tuple, (String, Long,Int,Int,Int,Int,Int), String]#Context, out: Collector[String]): Unit = {
+    override def processElement(value: (String, Long,Int,Int,Int,Int,Int), ctx: KeyedProcessFunction[Tuple, (String, Long,Int,Int,Int,Int,Int), ArrayList[InternalLog]]#Context, out: Collector[ArrayList[InternalLog]]): Unit = {
       hotState.add(value)
       // 注册 windowEnd+1 的 EventTime Timer, 当触发时，说明收齐了属于windowEnd窗口的所有商品数据
       // 也就是当程序看到windowend + 1的水位线watermark时，触发onTimer回调函数
@@ -158,14 +184,7 @@ object TopInternal {
     * 自定义累加器
     */
   class CountAgg extends AggregateFunction[(String,Int,Int, Int,Int,Int,Long),(Int,Int,Int,Int,Int), (Int,Int,Int,Int,Int)] {
-//    override def createAccumulator(): (Int, Int, Int) = (0,0,0)
-//
-//    override def add(value: (String, Int, Int, Int, Int, Int, Long), accumulator: (Int, Int, Int)): (Int, Int, Int) = {
-//      (accumulator._1 + 1, accumulator._2 + value._3 + value._4, accumulator._3 + value._5 + value._6)
-//    }
-//    override def getResult(accumulator: (Int, Int, Int)): (Int, Int, Int) = accumulator
-//
-//    override def merge(a: (Int, Int, Int), b: (Int, Int, Int)): (Int, Int, Int) = {(a._1+b._1,a._2+b._2,a._3+b._3)}
+
     override def createAccumulator(): (Int, Int, Int,Int,Int) = (0,0,0,0,0)
 
     override def add(value: (String, Int, Int, Int, Int, Int, Long), accumulator: (Int,Int, Int,Int,Int)): (Int,Int,Int,Int,Int) = {
